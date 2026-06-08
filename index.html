@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="description" content="OpenBMC 中文技术文档站 - 国内首个 OpenBMC 中文技术社区，提供入门教程、开发实战、规范解读等丰富内容">
+  <meta name="keywords" content="OpenBMC, BMC, IPMI, Redfish, 服务器管理, 固件开发, ASPEED, AST2600, AST2700">
+  <title>OpenBMC 中文技术站</title>
+  <link rel="stylesheet" href="//cdn.jsdelivr.net/npm/docsify@4/lib/themes/vue.css">
+  <style>
+    :root {
+      --theme-color: #15847b;
+      --theme-color-secondary: #0d5e56;
+      --link-color: #15847b;
+      --link-hover-color: #0d5e56;
+    }
+    .sidebar-nav > ul > li > a {
+      font-weight: bold;
+      font-size: 1.1em;
+      color: #15847b;
+    }
+    .markdown-section code {
+      background-color: #f8f8f8;
+      border-radius: 3px;
+      padding: 2px 6px;
+    }
+    .cover.show {
+      background: linear-gradient(to left bottom, hsl(170, 100%, 90%) 0%, hsl(170, 100%, 95%) 100%) !important;
+    }
+    .cover-main p a {
+      background-color: #15847b;
+      color: white;
+      padding: 8px 20px;
+      border-radius: 4px;
+      text-decoration: none;
+      transition: background-color 0.3s;
+    }
+    .cover-main p a:hover {
+      background-color: #0d5e56;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">Loading...</div>
+  <script>
+    window.$docsify = {
+      name: 'OpenBMC 中文站',
+      repo: 'WangXianzhen/openbmc-cn',
+      loadSidebar: true,
+      subMaxLevel: 3,
+      auto2top: true,
+      search: {
+        maxAge: 86400000,
+        paths: 'auto',
+        placeholder: '🔍 搜索',
+        noData: '😒 没有结果',
+        depth: 3
+      },
+      copyCode: {
+        buttonText: '📋 复制',
+        errorText: '❌ 复制失败',
+        successText: '✅ 已复制'
+      },
+      pagination: {
+        previousText: '← 上一篇',
+        nextText: '下一篇 →',
+        crossChapter: true
+      },
+      footer: {
+        copy: '<span id="year"></span> &copy; <a href="https://github.com/WangXianzhen">WangXianzhen</a>',
+        auth: 'Powered by <a href="https://docsify.js.org" target="_blank">Docsify</a>',
+        style: 'text-align: center; padding: 20px 0; color: #666; font-size: 14px;'
+      },
+      docsifyFooter: true,
+      formatUpdated: '{YYYY}/{MM}/{DD}',
+      timeUpdater: '<em>最后更新: {time}</em>'
+    };
+  </script>
+  <script src="//cdn.jsdelivr.net/npm/docsify@4/lib/docsify.min.js"></script>
+  <script src="//cdn.jsdelivr.net/npm/docsify/lib/plugins/search.min.js"></script>
+  <script src="//cdn.jsdelivr.net/npm/docsify-copy-code/dist/docsify-copy-code.min.js"></script>
+  <script src="//cdn.jsdelivr.net/npm/docsify-pagination/dist/docsify-pagination.min.js"></script>
+  <script src="//cdn.jsdelivr.net/npm/docsify-footer/dist/docsify-footer.min.js"></script>
+  <script src="//cdn.jsdelivr.net/npm/prismjs@1/components/bash.min.js"></script>
+  <script src="//cdn.jsdelivr.net/npm/prismjs@1/components/c.min.js"></script>
+  <script src="//cdn.jsdelivr.net/npm/prismjs@1/components/python.min.js"></script>
+  <script src="//cdn.jsdelivr.net/npm/prismjs@1/components/json.min.js"></script>
+  <script>
+    document.getElementById('year').textContent = new Date().getFullYear();
+  </script>
+</body>
+</html>
