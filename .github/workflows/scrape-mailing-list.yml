@@ -12,190 +12,270 @@ on:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: 检出仓库
         uses: actions/checkout@v4
 
-      - name: 安装 Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-
-      - name: 安装 Puppeteer
-        run: |
-          npm install puppeteer
-          npx puppeteer browsers install chrome
-
       - name: 创建输出目录
         run: mkdir -p output
 
-      - name: 运行抓取脚本
+      - name: 获取最新帖子
+        id: fetch
         run: |
-          cat > scrape.mjs << 'SCRIPT'
-import puppeteer from 'puppeteer';
-import fs from 'fs';
+          echo "📡 正在获取邮件列表..."
 
-// 配置
-const CONFIG = {
-    rssUrl: 'https://lore.kernel.org/openbmc/?feed=rss',
-    baseUrl: 'https://lore.kernel.org/openbmc/',
-    outputFile: 'output/posts.json',
-    summaryFile: 'output/summary.md'
-};
+          # 尝试多个来源
+          SOURCES=(
+            "https://lore.kernel.org/openbmc/?feed=rss"
+            "https://lore.kernel.org/openbmc/?format=atom"
+            "https://mail-index.netbsd.org/source/changes/?project=openbmc&柳format=浜岀"  # 备用
+          )
 
-console.log('🚀 开始抓取 OpenBMC 邮件列表...');
+          CONTENT=""
+          for url in "${SOURCES[@]}"; do
+            echo "尝试: $url"
+            CONTENT=$(curl -sL --max-time 30 \
+              -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+              "$url" 2>/dev/null || echo "")
 
-try {
-    // 启动浏览器
-    const browser = await puppeteer.launch({
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
-    });
+            if echo "$CONTENT" | grep -q "<item\|<entry"; then
+              echo "✅ 成功获取 RSS/Atom 内容"
+              echo "$CONTENT" > output/feed.xml
+              break
+            fi
+          done
 
-    const page = await browser.newPage();
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+          # 检查是否获取到内容
+          if ! echo "$CONTENT" | grep -q "<item\|<entry"; then
+            echo "⚠️ 无法直接获取 RSS，保存状态以便调试"
+            echo "$CONTENT" > output/feed.xml
+            echo "has_content=false" >> $GITHUB_OUTPUT
+          else
+            echo "has_content=true" >> $GITHUB_OUTPUT
+          fi
 
-    // 访问 RSS 页面
-    console.log('📡 正在获取 RSS feed...');
-    await page.goto(CONFIG.rssUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-    await page.waitForTimeout(3000);
+      - name: 解析帖子
+        if: steps.fetch.outputs.has_content == 'true'
+        id: parse
+        run: |
+          echo "📝 正在解析帖子..."
 
-    // 获取页面内容
-    const content = await page.content();
+          cat > parse.py << 'PYTHON'
+import re
+import json
+import sys
+from datetime import datetime
 
-    // 保存原始内容
-    fs.writeFileSync('output/raw.xml', content);
+# 读取 RSS 内容
+with open('output/feed.xml', 'r', encoding='utf-8') as f:
+    content = f.read()
 
-    // 检查是否被拦截
-    if (content.includes('not a bot') || content.includes('Anubis')) {
-        console.log('⚠️ 被反爬虫拦截，尝试访问主页...');
+posts = []
 
-        // 尝试访问主页
-        await page.goto(CONFIG.baseUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-        await page.waitForTimeout(5000);
+# 解析 RSS/Atom 项
+item_regex = r'<item>([\s\S]*?)</item>'
+entry_regex = r'<entry>([\s\S]*?)</entry>'
 
-        const mainContent = await page.content();
-        fs.writeFileSync('output/raw.html', mainContent);
+def get_field(text, tag):
+    # 尝试多种匹配方式
+    patterns = [
+        rf'<{tag}[^>]*><!\[CDATA\[([\s\S]*?)\]\]></{tag}>',
+        rf'<{tag}[^>]*>([\s\S]*?)</{tag}>',
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            return m.group(1).strip()
+    return ''
 
-        // 截图记录
-        await page.screenshot({ path: 'output/screenshot.png', fullPage: true });
-        console.log('📸 已保存截图到 output/screenshot.png');
-    }
+def clean_html(text):
+    if not text:
+        return ''
+    # 移除 HTML 标签
+    text = re.sub(r'<[^>]+>', '', text)
+    # 解码 HTML 实体
+    text = text.replace('&lt;', '<').replace('&gt;', '>').replace('&amp;', '&')
+    text = text.replace('&quot;', '"').replace('&apos;', "'").replace('&#39;', "'")
+    text = text.replace('&nbsp;', ' ').replace('&#x20;', ' ')
+    return text.strip()
 
-    // 解析 RSS
-    const posts = [];
-    const itemRegex = /<item>([\s\S]*?)<\/item>/gi;
-    let match;
+def parse_date(date_str):
+    if not date_str:
+        return ''
+    try:
+        dt = datetime.strptime(date_str, '%a, %d %b %Y %H:%M:%S %z')
+        return dt.astimezone().strftime('%Y-%m-%d %H:%M:%S')
+    except:
+        try:
+            dt = datetime.strptime(date_str[:26], '%Y-%m-%dT%H:%M:%S')
+            return dt.strftime('%Y-%m-%d %H:%M:%S')
+        except:
+            return date_str[:19] if len(date_str) > 19 else date_str
 
-    while ((match = itemRegex.exec(content)) !== null) {
-        const item = match[1];
-        const getField = (tag) => {
-            const regex = new RegExp(`<${tag}[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${tag}>|<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i');
-            const m = item.match(regex);
-            return m ? (m[1] || m[2] || '').trim() : '';
-        };
+# 匹配 item 或 entry
+for regex in [item_regex, entry_regex]:
+    for match in re.finditer(regex, content):
+        item = match.group(1)
 
-        const title = getField('title');
-        const link = getField('link');
-        const description = getField('description');
-        const pubDate = getField('pubDate');
-        const author = getField('author') || getField('dc:creator');
-        const guid = getField('guid');
+        title = clean_html(get_field(item, 'title'))
+        link = get_field(item, 'link')
+        description = get_field(item, 'description') or get_field(item, 'summary') or get_field(item, 'content')
+        pub_date = get_field(item, 'pubDate') or get_field(item, 'published') or get_field(item, 'updated')
+        author = get_field(item, 'author') or get_field(item, 'dc:creator') or get_field(item, 'name')
+        guid = get_field(item, 'guid') or link
 
-        const cleanHtml = (str) => str.replace(/<[^>]*>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').trim();
+        if title:
+            posts.append({
+                'id': guid,
+                'subject': title[:200],
+                'link': link if link.startswith('http') else f'https://lore.kernel.org{link}',
+                'author': clean_html(author)[:50],
+                'date': parse_date(pub_date),
+                'pubDate': pub_date,
+                'summary': clean_html(description)[:200] if description else ''
+            })
 
-        if (title) {
-            posts.push({
-                id: guid || link,
-                subject: cleanHtml(title),
-                link: link,
-                author: cleanHtml(author),
-                date: pubDate ? new Date(pubDate).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '',
-                pubDate: pubDate,
-                summary: cleanHtml(description).substring(0, 200)
-            });
-        }
-    }
+# 去重
+seen = set()
+unique_posts = []
+for p in posts:
+    if p['id'] not in seen:
+        seen.add(p['id'])
+        unique_posts.append(p)
 
-    console.log(`✅ 找到 ${posts.length} 条帖子`);
+# 保存 JSON
+data = {
+    'meta': {
+        'source': 'https://lore.kernel.org/openbmc/',
+        'scrapedAt': datetime.now().astimezone().isoformat(),
+        'totalPosts': len(unique_posts)
+    },
+    'posts': unique_posts
+}
 
-    // 保存 JSON
-    const data = {
-        meta: {
-            source: CONFIG.rssUrl,
-            scrapedAt: new Date().toISOString(),
-            totalPosts: posts.length
-        },
-        posts: posts
-    };
-    fs.writeFileSync(CONFIG.outputFile, JSON.stringify(data, null, 2));
+with open('output/posts.json', 'w', encoding='utf-8') as f:
+    json.dump(data, f, ensure_ascii=False, indent=2)
 
-    // 生成 Markdown
-    const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
-    let md = `# OpenBMC 邮件列表最新动态
+print(f"✅ 解析完成，共 {len(unique_posts)} 条帖子")
 
-> 自动生成于 ${now}
+# 生成 Markdown 摘要
+if unique_posts:
+    now = datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S')
+    md = f'''# OpenBMC 邮件列表最新动态
+
+> 自动生成于 {now}
 
 ## 📊 统计
 
 | 指标 | 数值 |
 |------|------|
-| 帖子总数 | ${posts.length} |
+| 帖子总数 | {len(unique_posts)} |
 
 ## 🔥 最新帖子
 
 | 日期 | 作者 | 主题 |
 |------|------|------|
-`;
+'''
 
-    posts.slice(0, 30).forEach(post => {
-        const author = post.author.split('@')[0].split('<')[0].trim().substring(0, 15);
-        const date = post.date.split(' ')[0] || '';
-        const link = post.link ? \`[\${post.subject.substring(0, 60)}](\${post.link})\` : post.subject.substring(0, 60);
-        md += \`| \${date} | \${author} | \${link} |\n\`;
-    });
+    for post in unique_posts[:30]:
+        author = post['author'].split('@')[0].split('<')[0].strip()[:15]
+        date = post['date'][:10] if post['date'] else ''
+        subject = post['subject'][:60]
+        link = post['link']
+        md += f'| {date} | {author} | [{subject}]({link}) |\n'
 
-    md += \`
+    md += f'''
 ---
-
-*⚠️ 如显示帖子数量为 0，可能是反爬虫拦截，请手动触发 Workflow*
 
 *🔗 来源: https://lore.kernel.org/openbmc/*
 
-*[返回首页](/README)* | *[目录](/_sidebar)*\`;
+*[返回首页](/README)* | *[目录](/_sidebar)*
+'''
 
-    fs.writeFileSync(CONFIG.summaryFile, md);
+    with open('output/summary.md', 'w', encoding='utf-8') as f:
+        f.write(md)
 
-    await browser.close();
+    print(f'✅ 已生成 summary.md')
+else:
+    print('⚠️ 未解析到帖子')
+    # 创建占位文件
+    with open('output/posts.json', 'w', encoding='utf-8') as f:
+        json.dump({'meta': {'error': '无法获取帖子数据'}, 'posts': []}, f, ensure_ascii=False, indent=2)
+PYTHON
 
-    console.log('✅ 抓取完成！');
-    console.log(\`📁 输出:\`);
-    console.log(\`   - output/posts.json\`);
-    console.log(\`   - output/summary.md\`);
-    console.log(\`   - output/raw.xml 或 output/raw.html\`);
+          python3 parse.py
 
-} catch (error) {
-    console.error('❌ 抓取失败:', error.message);
-    process.exit(1);
+      - name: 生成占位内容
+        if: steps.fetch.outputs.has_content != 'true'
+        run: |
+          echo "⚠️ 无法获取 RSS 内容，生成占位文件"
+
+          cat > output/posts.json << 'EOF'
+{
+  "meta": {
+    "source": "https://lore.kernel.org/openbmc/",
+    "scrapedAt": "请手动访问网站查看",
+    "totalPosts": 0,
+    "error": "lore.kernel.org 使用 Anubis 反爬虫保护，无法自动抓取"
+  },
+  "posts": []
 }
-SCRIPT
+EOF
 
-          node scrape.mjs
+          cat > output/summary.md << 'EOF'
+# OpenBMC 邮件列表最新动态
+
+> ⚠️ 自动抓取暂时不可用
+
+## 原因
+
+lore.kernel.org 使用了 **Anubis** 反爬虫保护，需要浏览器执行 JavaScript 验证。
+
+GitHub Actions 的无头浏览器未能通过验证。
+
+## 解决方案
+
+### 方案 1: 手动触发 Workflow
+1. 访问 https://github.com/WangXianzhen/openbmc-cn/actions
+2. 点击 "抓取 OpenBMC 邮件列表"
+3. 点击 "Run workflow"
+
+### 方案 2: 订阅邮件列表
+1. 访问 https://lists.ozlabs.org/listinfo/openbmc
+2. 订阅后通过邮件接收最新讨论
+
+### 方案 3: 手动访问
+- 📧 邮件归档: https://lore.kernel.org/openbmc/
+- 💬 GitHub 讨论: https://github.com/orgs/openbmc/discussions
+
+---
+
+*[返回首页](/README)* | *[目录](/_sidebar)*
+EOF
+
+      - name: 显示结果
+        run: |
+          echo ""
+          echo "📁 输出文件:"
+          ls -la output/
+          echo ""
+          if [ -f output/posts.json ]; then
+            echo "📊 帖子数量:"
+            python3 -c "import json; d=json.load(open('output/posts.json')); print(f'  {d[\"meta\"][\"totalPosts\"]} 条')" 2>/dev/null || echo "  0 条"
+          fi
 
       - name: 提交更改
         run: |
           git config user.name "GitHub Actions Bot"
           git config user.email "actions@github.com"
 
-          # 添加所有输出文件
           git add output/
 
           # 检查是否有更改
           if git diff --staged --quiet; then
-            echo "没有新的帖子数据，跳过提交"
+            echo "没有新的数据，跳过提交"
           else
             git commit -m "chore: 更新邮件列表 $(date +%Y-%m-%d\ %H:%M)"
             git push
