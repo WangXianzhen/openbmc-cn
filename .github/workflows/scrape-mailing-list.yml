@@ -1,0 +1,203 @@
+name: 抓取 OpenBMC 邮件列表
+
+on:
+  schedule:
+    # 每天 UTC 0:00 (北京时间 08:00)
+    - cron: '0 0 * * *'
+  workflow_dispatch:  # 手动触发
+  push:
+    branches:
+      - master
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: 安装 Puppeteer
+        run: |
+          npm install puppeteer
+          npx puppeteer browsers install chrome
+
+      - name: 创建输出目录
+        run: mkdir -p output
+
+      - name: 运行抓取脚本
+        run: |
+          cat > scrape.mjs << 'SCRIPT'
+import puppeteer from 'puppeteer';
+import fs from 'fs';
+
+// 配置
+const CONFIG = {
+    rssUrl: 'https://lore.kernel.org/openbmc/?feed=rss',
+    baseUrl: 'https://lore.kernel.org/openbmc/',
+    outputFile: 'output/posts.json',
+    summaryFile: 'output/summary.md'
+};
+
+console.log('🚀 开始抓取 OpenBMC 邮件列表...');
+
+try {
+    // 启动浏览器
+    const browser = await puppeteer.launch({
+        headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+    });
+
+    const page = await browser.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+
+    // 访问 RSS 页面
+    console.log('📡 正在获取 RSS feed...');
+    await page.goto(CONFIG.rssUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+    await page.waitForTimeout(3000);
+
+    // 获取页面内容
+    const content = await page.content();
+
+    // 保存原始内容
+    fs.writeFileSync('output/raw.xml', content);
+
+    // 检查是否被拦截
+    if (content.includes('not a bot') || content.includes('Anubis')) {
+        console.log('⚠️ 被反爬虫拦截，尝试访问主页...');
+
+        // 尝试访问主页
+        await page.goto(CONFIG.baseUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+        await page.waitForTimeout(5000);
+
+        const mainContent = await page.content();
+        fs.writeFileSync('output/raw.html', mainContent);
+
+        // 截图记录
+        await page.screenshot({ path: 'output/screenshot.png', fullPage: true });
+        console.log('📸 已保存截图到 output/screenshot.png');
+    }
+
+    // 解析 RSS
+    const posts = [];
+    const itemRegex = /<item>([\s\S]*?)<\/item>/gi;
+    let match;
+
+    while ((match = itemRegex.exec(content)) !== null) {
+        const item = match[1];
+        const getField = (tag) => {
+            const regex = new RegExp(`<${tag}[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${tag}>|<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i');
+            const m = item.match(regex);
+            return m ? (m[1] || m[2] || '').trim() : '';
+        };
+
+        const title = getField('title');
+        const link = getField('link');
+        const description = getField('description');
+        const pubDate = getField('pubDate');
+        const author = getField('author') || getField('dc:creator');
+        const guid = getField('guid');
+
+        const cleanHtml = (str) => str.replace(/<[^>]*>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').trim();
+
+        if (title) {
+            posts.push({
+                id: guid || link,
+                subject: cleanHtml(title),
+                link: link,
+                author: cleanHtml(author),
+                date: pubDate ? new Date(pubDate).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '',
+                pubDate: pubDate,
+                summary: cleanHtml(description).substring(0, 200)
+            });
+        }
+    }
+
+    console.log(`✅ 找到 ${posts.length} 条帖子`);
+
+    // 保存 JSON
+    const data = {
+        meta: {
+            source: CONFIG.rssUrl,
+            scrapedAt: new Date().toISOString(),
+            totalPosts: posts.length
+        },
+        posts: posts
+    };
+    fs.writeFileSync(CONFIG.outputFile, JSON.stringify(data, null, 2));
+
+    // 生成 Markdown
+    const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+    let md = `# OpenBMC 邮件列表最新动态
+
+> 自动生成于 ${now}
+
+## 📊 统计
+
+| 指标 | 数值 |
+|------|------|
+| 帖子总数 | ${posts.length} |
+
+## 🔥 最新帖子
+
+| 日期 | 作者 | 主题 |
+|------|------|------|
+`;
+
+    posts.slice(0, 30).forEach(post => {
+        const author = post.author.split('@')[0].split('<')[0].trim().substring(0, 15);
+        const date = post.date.split(' ')[0] || '';
+        const link = post.link ? \`[\${post.subject.substring(0, 60)}](\${post.link})\` : post.subject.substring(0, 60);
+        md += \`| \${date} | \${author} | \${link} |\n\`;
+    });
+
+    md += \`
+---
+
+*⚠️ 如显示帖子数量为 0，可能是反爬虫拦截，请手动触发 Workflow*
+
+*🔗 来源: https://lore.kernel.org/openbmc/*
+
+*[返回首页](/README)* | *[目录](/_sidebar)*\`;
+
+    fs.writeFileSync(CONFIG.summaryFile, md);
+
+    await browser.close();
+
+    console.log('✅ 抓取完成！');
+    console.log(\`📁 输出:\`);
+    console.log(\`   - output/posts.json\`);
+    console.log(\`   - output/summary.md\`);
+    console.log(\`   - output/raw.xml 或 output/raw.html\`);
+
+} catch (error) {
+    console.error('❌ 抓取失败:', error.message);
+    process.exit(1);
+}
+SCRIPT
+
+          node scrape.mjs
+
+      - name: 提交更改
+        run: |
+          git config user.name "GitHub Actions Bot"
+          git config user.email "actions@github.com"
+
+          # 添加所有输出文件
+          git add output/
+
+          # 检查是否有更改
+          if git diff --staged --quiet; then
+            echo "没有新的帖子数据，跳过提交"
+          else
+            git commit -m "chore: 更新邮件列表 $(date +%Y-%m-%d\ %H:%M)"
+            git push
+            echo "✅ 已提交并推送更新"
+          fi

@@ -1,0 +1,22 @@
+{
+  "name": "openbmc-mailing-list-scraper",
+  "version": "1.0.0",
+  "description": "OpenBMC 邮件列表抓取工具",
+  "main": "scraper.js",
+  "scripts": {
+    "scrape": "node scraper.js",
+    "scrape:verbose": "node scraper.js --verbose",
+    "update": "node scraper.js --update"
+  },
+  "keywords": [
+    "openbmc",
+    "scraper",
+    "mailing-list"
+  ],
+  "author": "WangXianzhen",
+  "license": "MIT",
+  "dependencies": {
+    "puppeteer": "^22.0.0",
+    "cheerio": "^1.0.0-rc.12"
+  }
+}
