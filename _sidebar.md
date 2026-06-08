@@ -38,3 +38,4 @@
   * [官方文档](/resources/01-official)
   * [开源项目](/resources/02-projects)
   * [技术社区](/resources/03-community)
+  * [邮件列表追踪](/resources/04-mailing-list)
