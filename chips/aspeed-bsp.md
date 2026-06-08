@@ -330,4 +330,4 @@ ipmitool -I open local
 
 ---
 
-*[返回首页](../README.md)* | *[目录](../_sidebar.md)*
+*[返回首页](/README)* | *[目录](/_sidebar)*
